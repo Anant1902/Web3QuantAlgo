@@ -1,6 +1,83 @@
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 import pandas as pd
+import numpy as np
+
+def calculate_metrics(df):
+    """
+    Calculates strategy performance metrics.
+    Assumes each row in df is a 5-minute interval.
+    """
+    # Portfolio periodic returns (clean infinities and NaNs)
+    returns = df['capital'].pct_change().replace([np.inf, -np.inf], np.nan).dropna()
+    N = 288 * 365 # Count of 5-min intervals in a standard 365-day year
+
+    # Annualized components
+    mean_return = returns.mean() * N
+    volatility = returns.std() * np.sqrt(N)
+    
+    # Sharpe Ratio
+    sharpe = mean_return / volatility if volatility != 0 else 0
+    
+    # Sortino Ratio (use downside deviation). If downside volatility is zero
+    # (e.g., almost no negative periodic returns) fall back to total volatility
+    downside_returns = returns[returns < 0]
+    if downside_returns.empty or downside_returns.std() == 0:
+        # Fallback to total volatility to avoid division by near-zero
+        downside_volatility = volatility
+    else:
+        downside_volatility = downside_returns.std() * np.sqrt(N)
+    sortino = mean_return / downside_volatility if downside_volatility != 0 else np.nan
+    
+    # Calmar Ratio
+    cumulative_max = df['capital'].cummax()
+    drawdown = (df['capital'] - cumulative_max) / cumulative_max
+    mdd = abs(drawdown.min())
+    calmar = mean_return / mdd if mdd != 0 else 0
+    
+    # Calculate Beta and Alpha relative to the Buy and Hold asset path
+    market_returns = df['close'].pct_change().dropna()
+    
+    # Align lengths just in case (they should be identical coming from same DF)
+    strat_r = returns.align(market_returns, join='inner')[0]
+    mkt_r = market_returns.align(returns, join='inner')[0]
+    
+    # Covariance and Variance to find Beta
+    covariance = strat_r.cov(mkt_r)
+    variance = mkt_r.var()
+    beta = covariance / variance if variance != 0 else np.nan
+    
+    # Calculate Alpha (Annualized) based on CAPM: Alpha = StratReturn - (RiskFree + Beta * (MarketReturn - RiskFree))
+    # Assuming risk free rate of 0% for crypto strategies for simplicity
+    annualized_market_return = mkt_r.mean() * N
+    alpha = mean_return - (beta * annualized_market_return) if np.isfinite(beta) else np.nan
+
+    # Calculate Annualized Percentage Return on Portfolio
+    # Total percentage return converted to an annualized figure using geometric mean
+    total_return = (df['capital'].iloc[-1] / df['capital'].iloc[0]) - 1
+    years = len(df) / N
+    if years > 0:
+        annualized_return = (1 + total_return) ** (1 / years) - 1
+    else:
+        annualized_return = 0
+
+    # Composite Score
+    # If any metric is not finite, set composite parts to zero for safety
+    s_sortino = sortino if np.isfinite(sortino) else 0.0
+    s_sharpe = sharpe if np.isfinite(sharpe) else 0.0
+    s_calmar = calmar if np.isfinite(calmar) else 0.0
+    composite_score = (0.4 * s_sortino) + (0.3 * s_sharpe) + (0.3 * s_calmar)
+    
+    return {
+        'Sharpe Ratio': sharpe,
+        'Sortino Ratio': sortino,
+        'Calmar Ratio': calmar,
+        'Max Drawdown': mdd,
+        'Beta': beta,
+        'Alpha': alpha,
+        'Annualized Return': annualized_return,
+        'Composite Score': composite_score
+    }
 
 def backtest_strategy(df, initial_capital=1000000.0, risk_per_trade=0.02, rr_ratio=3.0):
     """
@@ -98,7 +175,7 @@ def backtest_strategy(df, initial_capital=1000000.0, risk_per_trade=0.02, rr_rat
     df['capital'] = capital_history
     return df, trades
 
-def plot_interactive_trades(df, trades, save_path='data/interactive_trades.html'):
+def plot_interactive_trades(df, trades, initial_capital=1000000.0, risk_per_trade=0.02, rr_ratio=3.0, save_path='data/interactive_trades.html'):
     """
     Creates an interactive Plotly candlestick chart with trade entries and exits.
     """
@@ -148,6 +225,48 @@ def plot_interactive_trades(df, trades, save_path='data/interactive_trades.html'
                              marker=dict(symbol='x', size=10, color='black'),
                              name='Stop Loss Hit'))
                              
+    # Calculate operational metrics
+    metrics = calculate_metrics(df)
+
+    # Prepare ratios table (separate view for ratios/metrics)
+    ratios_keys = [
+        'Annualized Return', 'Sharpe Ratio', 'Sortino Ratio', 'Calmar Ratio',
+        'Max Drawdown', 'Beta', 'Alpha', 'Composite Score'
+    ]
+    ratios_values = []
+    for k in ratios_keys:
+        v = metrics.get(k)
+        if k == 'Annualized Return' and np.isfinite(v):
+            ratios_values.append(f"{v*100:.2f}%")
+        elif k == 'Max Drawdown' and np.isfinite(v):
+            ratios_values.append(f"-{v*100:.2f}%")
+        elif k == 'Alpha' and np.isfinite(v):
+            ratios_values.append(f"{v*100:.2f}%")
+        elif isinstance(v, float) and np.isfinite(v):
+            ratios_values.append(f"{v:.2f}")
+        else:
+            ratios_values.append("N/A")
+
+    ratios_table = go.Table(
+        header=dict(values=["Metric", "Value"], fill_color='lightgrey', align='left'),
+        cells=dict(values=[ratios_keys, ratios_values], fill_color='white', align='left'),
+        domain=dict(x=[0.01, 0.28], y=[0.62, 0.98])
+    )
+
+    # Prepare parameters table (separate from ratios)
+    params_keys = ["Initial Capital", "Risk Per Trade", "RR Ratio"]
+    params_values = [f"${initial_capital:,.2f}", f"{risk_per_trade*100:.2f}%", f"{rr_ratio:.2f}:1"]
+
+    params_table = go.Table(
+        header=dict(values=["Parameter", "Value"], fill_color='lightgrey', align='left'),
+        cells=dict(values=[params_keys, params_values], fill_color='white', align='left'),
+        domain=dict(x=[0.01, 0.28], y=[0.38, 0.60])
+    )
+
+    # Add the tables to the figure
+    fig.add_trace(ratios_table)
+    fig.add_trace(params_table)
+
     fig.update_layout(
         title='Strategy Execution: Entries, Exits & Portfolio Balance',
         xaxis_title='Time',
@@ -161,10 +280,13 @@ def plot_interactive_trades(df, trades, save_path='data/interactive_trades.html'
         xaxis_rangeslider_visible=True,
         template='plotly_white',
         legend=dict(
-            x=0.01,
-            y=0.99,
-            bgcolor='rgba(255, 255, 255, 0.8)'
-        )
+            x=1.02,
+            y=1.0,
+            xanchor='left',
+            yanchor='top',
+            bgcolor='rgba(255, 255, 255, 0.9)'
+        ),
+        margin=dict(r=260)
     )
     
     # Crucial fix: The rangeslider defaults to locking the Y-axis zoom. 
@@ -216,7 +338,7 @@ def analyze_and_plot(result_df, initial_capital=1000000.0, risk_per_trade=0.02, 
     print(f"Chart saved to '{save_path}'")
     
     # Run the interactive Plotly graphing function
-    plot_interactive_trades(backtested_df, trades, save_path='data/interactive_trades.html')
+    plot_interactive_trades(backtested_df, trades, initial_capital=initial_capital, risk_per_trade=risk_per_trade, rr_ratio=rr_ratio, save_path='data/interactive_trades.html')
     
     # Optionally, save to CSV
     backtested_df.to_csv(csv_path, index=False)

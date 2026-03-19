@@ -1,0 +1,7 @@
+README.md
+pyproject.toml
+web3quantalgo.egg-info/PKG-INFO
+web3quantalgo.egg-info/SOURCES.txt
+web3quantalgo.egg-info/dependency_links.txt
+web3quantalgo.egg-info/requires.txt
+web3quantalgo.egg-info/top_level.txt

@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: web3quantalgo
+Version: 0.1.0
+Summary: Add your description here
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: pandas>=3.0.1
+Requires-Dist: requests>=2.31.0
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: matplotlib>=3.8.0
+Requires-Dist: plotly>=5.17.0
+Requires-Dist: numpy>=1.24.0

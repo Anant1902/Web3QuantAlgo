@@ -41,19 +41,57 @@ def load_live_trades():
         return pd.DataFrame()
 
 @st.cache_data(ttl=5)
-def get_live_balance():
+def get_live_holdings():
+    """Fetch all wallet holdings from the API."""
     try:
         loader = MarketDataLoader(data_path="", use_api=True)
         balance_data = loader.get_balance()
         if balance_data and balance_data.get("Success"):
             wallet = balance_data.get("Wallet") or balance_data.get("SpotWallet", {})
-            usd_balance = wallet.get("USD", {})
-            free = float(usd_balance.get('Free', 0))
-            locked = float(usd_balance.get('Lock', 0))
-            return free + locked
+            return wallet
     except Exception as e:
-        print(f"Error fetching balance from API: {e}")
+        print(f"Error fetching holdings from API: {e}")
     return None
+
+@st.cache_data(ttl=5)
+def get_live_prices():
+    """Fetch current market prices from the API."""
+    try:
+        import requests
+        import time
+        timestamp = str(int(time.time() * 1000))
+        res = requests.get("https://mock-api.roostoo.com/v3/ticker", params={'timestamp': timestamp})
+        data = res.json()
+        if data and data.get("Success"):
+            return data.get("Data", {})
+    except Exception as e:
+        print(f"Error fetching prices from API: {e}")
+    return {}
+
+@st.cache_data(ttl=5)
+def get_live_balance():
+    wallet = get_live_holdings()
+    if wallet:
+        usd_balance = wallet.get("USD", {})
+        free = float(usd_balance.get('Free', 0))
+        locked = float(usd_balance.get('Lock', 0))
+        return free + locked
+    return None
+
+def get_pending_orders():
+    """Fetch pending orders from the Roostoo API."""
+    try:
+        loader = MarketDataLoader(data_path="", use_api=True)
+        # Note: the doc says "pending_only can send to ask pending order(s) only"
+        response = loader.query_order(pending_only=True)
+        if response:
+            if response.get("Success"):
+                return response.get("OrderMatched", [])
+            else:
+                return []
+    except Exception as e:
+        print(f"Error fetching pending orders: {e}")
+    return []
 
 st.title("🤖 Web3QuantAlgo Live Trading Dashboard")
 
@@ -80,13 +118,85 @@ else:
     profit_capital = current_capital - start_capital
     pct_capital = (profit_capital / start_capital) * 100 if start_capital > 0 else 0
     
-    col1.metric("Account Balance", f"${current_capital:,.2f}", f"{profit_capital:+,.2f} ({pct_capital:+.2f}%)")
+    col1_placeholder = col1.empty()
+    col1_placeholder.metric("Account Balance (USD Only)", f"${current_capital:,.2f}", f"{profit_capital:+,.2f} ({pct_capital:+.2f}%)")
     col2.metric("Current Asset Price", f"${current_price:,.2f}")
     
     # Trade Count
     num_trades = len(df[df['signal'] != 0]) if 'signal' in df.columns else 0
     col3.metric("Total Executed Signals", num_trades)
     
+    # ------------------ Portfolio Holdings ------------------
+    st.subheader("Current Portfolio Holdings")
+    wallet = get_live_holdings()
+    prices = get_live_prices()
+    if wallet:
+        # Convert dictionary to DataFrame for nice Display
+        holdings_list = []
+        total_usd_value = 0.0
+        
+        for asset, data in wallet.items():
+            free = float(data.get('Free', 0))
+            locked = float(data.get('Lock', 0))
+            total = free + locked
+            
+            if total > 0:
+                asset_usd_value = 0.0
+                if asset == "USD":
+                    asset_usd_value = total
+                else:
+                    pair = f"{asset}/USD"
+                    if pair in prices:
+                        price = float(prices[pair].get("LastPrice", 0))
+                        asset_usd_value = total * price
+                        
+                total_usd_value += asset_usd_value
+                
+                holdings_list.append({
+                    "Asset": asset,
+                    "Free": free,
+                    "Locked": locked,
+                    "Total": total,
+                    "Est. USD Value": asset_usd_value
+                })
+                
+        if holdings_list:
+            holdings_df = pd.DataFrame(holdings_list)
+            # Format the USD Value column
+            holdings_df['Est. USD Value ($)'] = holdings_df['Est. USD Value'].copy()
+            holdings_df['Est. USD Value'] = holdings_df['Est. USD Value'].apply(lambda x: f"${x:,.2f}")
+            st.dataframe(holdings_df.drop(columns=['Est. USD Value ($)']).set_index('Asset'), use_container_width=True)
+            st.markdown(f"**Total Portfolio Value (incl. USD):** ${total_usd_value:,.2f}")
+            
+            # Update the account balance widget to use the total portfolio value instead of just USD
+            col1_placeholder.metric("Total Portfolio Value", f"${total_usd_value:,.2f}", f"{(total_usd_value - start_capital):+,.2f} ({((total_usd_value - start_capital) / start_capital) * 100 if start_capital > 0 else 0:+.2f}%)")
+        else:
+            st.info("No balances found in your wallet.")
+    else:
+        st.warning("Could not fetch live wallet holdings from the API.")
+
+    # ------------------ Pending Orders ------------------
+    st.subheader("Pending Orders")
+    if st.button("Query Pending Orders"):
+        with st.spinner("Fetching from API..."):
+            pending_orders = get_pending_orders()
+            if pending_orders:
+                orders_df = pd.DataFrame(pending_orders)
+                # Filter down to useful display columns if they exist
+                desired_cols = ["OrderId", "Pair", "Side", "Type", "Price", "Amount", "Timestamp"]
+                display_cols = [c for c in desired_cols if c in orders_df.columns]
+                
+                # Format Timestamp if available
+                if "Timestamp" in orders_df.columns:
+                    orders_df["Timestamp"] = pd.to_datetime(orders_df["Timestamp"], unit='ms')
+                
+                if len(display_cols) > 0:
+                    st.dataframe(orders_df[display_cols].set_index("OrderId"), use_container_width=True)
+                else:
+                    st.dataframe(orders_df, use_container_width=True)
+            else:
+                st.info("No pending orders matched.")
+
     # ------------------ Candlestick Chart ------------------
     st.subheader("Price & Signal Chart (Historical + Live)")
     

@@ -89,6 +89,31 @@ class MarketDataLoader:
             print(f"Error getting balance from API: {e}")
             return None
 
+    def query_order(self, order_id: Optional[str] = None, pair: Optional[str] = None, pending_only: bool = False) -> Optional[dict]:
+        """Query order from API."""
+        if not self.api_key or not self.secret_key:
+            raise ValueError("API_KEY and SECRET_KEY environment variables must be set")
+        
+        url = f"{self.base_url}/v3/query_order"
+        payload = {}
+        if order_id:
+            payload["order_id"] = order_id
+        if pair:
+            payload["pair"] = pair
+        if pending_only:
+            payload["pending_only"] = "TRUE"
+            
+        headers, signed_payload, _ = self._get_signed_headers(payload)
+        headers['Content-Type'] = 'application/x-www-form-urlencoded'
+        
+        try:
+            res = requests.post(url, headers=headers, data=signed_payload)
+            res.raise_for_status()
+            return res.json()
+        except requests.exceptions.RequestException as e:
+            print(f"Error querying order from API: {e}")
+            return None
+
     def get_klines_websocket(self, symbol: str = "btcusdt", interval: str = "5m", num_candles: int = 100, timeout: int = 60) -> pd.DataFrame:
         """
         Fetch kline (candlestick) data from Binance WebSocket stream.

@@ -137,3 +137,46 @@ def place_order(pair_or_coin, side, quantity, price=None, order_type=None):
     except requests.exceptions.RequestException as e:
         print(f"Error placing order: {e}")
         return None
+
+def query_order(order_id=None, pair=None, pending_only=None):
+    """Query order history or pending orders."""
+    url = f"{BASE_URL}/v3/query_order"
+    payload = {}
+    if order_id:
+        payload['order_id'] = str(order_id)
+    elif pair:
+        payload['pair'] = pair
+        if pending_only is not None:
+            payload['pending_only'] = 'TRUE' if pending_only else 'FALSE'
+
+    headers, _, total_params = _get_signed_headers(payload)
+    headers['Content-Type'] = 'application/x-www-form-urlencoded'
+
+    try:
+        res = requests.post(url, headers=headers, data=total_params)
+        res.raise_for_status()
+        return res.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error querying order: {e}")
+        return None
+
+def cancel_order(order_id=None, pair=None):
+    """Cancel specific or all pending orders."""
+    url = f"{BASE_URL}/v3/cancel_order"
+    payload = {}
+    if order_id:
+        payload['order_id'] = str(order_id)
+    elif pair:
+        payload['pair'] = pair
+
+    headers, _, total_params = _get_signed_headers(payload)
+    headers['Content-Type'] = 'application/x-www-form-urlencoded'
+
+    try:
+        res = requests.post(url, headers=headers, data=total_params)
+        res.raise_for_status()
+        return res.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error canceling order: {e}")
+        return None
+

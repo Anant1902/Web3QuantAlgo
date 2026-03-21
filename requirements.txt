@@ -5,3 +5,4 @@ pandas
 streamlit
 plotly
 python-dotenv
+jinja2

@@ -187,17 +187,27 @@ class MarketDataLoader:
         """
         Loads historical klines from a CSV file into a pandas DataFrame.
         
-        Note: CSV timestamps are in microseconds (us), WebSocket timestamps are in milliseconds (ms).
-        This method handles the us format for CSV files.
+        Supports two formats:
+        - Raw format: numeric timestamps in microseconds, no header
+        - Master format: ISO datetime strings with header row
         """
         filepath = os.path.join(self.data_path, filename)
         
-        # Read CSV using the defined column names
-        df = pd.read_csv(filepath, names=self.columns)
-        
-        # Convert timestamps from microseconds to datetime objects
-        df['open_time'] = pd.to_datetime(df['open_time'], unit='us')
-        df['close_time'] = pd.to_datetime(df['close_time'], unit='us')
+        # load with header first (master CSV format)
+        try:
+            df = pd.read_csv(filepath)
+            # If successful, convert open_time from ISO datetime string
+            df.rename(columns={'Unnamed: 0': 'open_time'}, inplace=True)
+            if 'open_time' not in df.columns:
+                df.columns = self.columns
+            df['open_time'] = pd.to_datetime(df['open_time'])
+            df['close_time'] = pd.to_datetime(df['close_time'], errors='coerce')
+        except (ValueError, KeyError):
+            # Fallback to raw numeric format
+            df = pd.read_csv(filepath, names=self.columns, header=None)
+            # Convert timestamps from microseconds to datetime
+            df['open_time'] = pd.to_datetime(df['open_time'], unit='us')
+            df['close_time'] = pd.to_datetime(df['close_time'], unit='us')
         
         # Set the 'open_time' as the DataFrame Index
         df.set_index('open_time', inplace=True)

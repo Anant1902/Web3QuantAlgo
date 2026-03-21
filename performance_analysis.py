@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
+from strategy import calculate_trade_parameters
 
 def calculate_metrics(df):
     """
@@ -142,35 +143,20 @@ def backtest_strategy(df, initial_capital=1000000.0, risk_per_trade=0.02, rr_rat
         if not in_position and i > 5:
             prev_signal = df.loc[i-1, 'signal']
             
-            if prev_signal == 1:
-                # Buy signal
-                position_type = 'LONG'
+            if prev_signal == 1 or prev_signal == -1:
                 entry_price = curr_row['open']
-                # SL at previous local support (minimum low of the last 5 finalized candles)
-                sl = df.loc[i-6:i-1, 'low'].min()
+                calc_sl, calc_tp, calc_pos_size = calculate_trade_parameters(
+                    df, i, prev_signal, entry_price, capital, risk_per_trade, rr_ratio
+                )
                 
-                if entry_price > sl: # Valid risk distance
-                    risk_per_unit = entry_price - sl
-                    risk_amount = capital * risk_per_trade
-                    position_size = risk_amount / risk_per_unit
-                    tp = entry_price + (risk_per_unit * rr_ratio)
+                # If calculated position size is greater than 0, properties are valid
+                if calc_pos_size > 0:
+                    position_type = 'LONG' if prev_signal == 1 else 'SHORT'
+                    sl = calc_sl
+                    tp = calc_tp
+                    position_size = calc_pos_size
                     in_position = True
-                    current_trade = {'type': 'LONG', 'entry_i': i, 'entry_price': entry_price, 'size': position_size}
-                    
-            elif prev_signal == -1:
-                # Sell signal
-                position_type = 'SHORT'
-                entry_price = curr_row['open']
-                # SL at previous local resistance (maximum high of the last 5 finalized candles)
-                sl = df.loc[i-6:i-1, 'high'].max()
-                
-                if sl > entry_price: # Valid risk distance
-                    risk_per_unit = sl - entry_price
-                    risk_amount = capital * risk_per_trade
-                    position_size = risk_amount / risk_per_unit
-                    tp = entry_price - (risk_per_unit * rr_ratio)
-                    in_position = True
-                    current_trade = {'type': 'SHORT', 'entry_i': i, 'entry_price': entry_price, 'size': position_size}
+                    current_trade = {'type': position_type, 'entry_i': i, 'entry_price': entry_price, 'size': position_size}
 
     df['capital'] = capital_history
     return df, trades

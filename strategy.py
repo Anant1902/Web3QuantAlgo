@@ -40,6 +40,36 @@ def candlestick_reversal_strategy(data):
     df['signal'] = signals
     return df
 
+def calculate_trade_parameters(df, current_index, signal, entry_price, capital, risk_per_trade=0.02, rr_ratio=3.0):
+    """
+    Calculates Stop Loss (SL), Take Profit (TP), and Position Size based on risk management rules.
+    """
+    if current_index <= 5:
+        return 0.0, 0.0, 0.0
+        
+    risk_amount = capital * risk_per_trade
+    sl = 0.0
+    tp = 0.0
+    position_size = 0.0
+    
+    if signal == 1: # LONG
+        # SL at previous local support (minimum low of the last 5 finalized candles)
+        sl = df.loc[current_index-6:current_index-1, 'low'].min()
+        if entry_price > sl: # Valid risk distance
+            risk_per_unit = entry_price - sl
+            position_size = risk_amount / risk_per_unit
+            tp = entry_price + (risk_per_unit * rr_ratio)
+            
+    elif signal == -1: # SHORT
+        # SL at previous local resistance (maximum high of the last 5 finalized candles)
+        sl = df.loc[current_index-6:current_index-1, 'high'].max()
+        if sl > entry_price: # Valid risk distance
+            risk_per_unit = sl - entry_price
+            position_size = risk_amount / risk_per_unit
+            tp = entry_price - (risk_per_unit * rr_ratio)
+            
+    return sl, tp, position_size
+
 # Example usage
 if __name__ == "__main__":
     df = candlestick_reversal_strategy('./data/processed-5m-2026-02.csv')

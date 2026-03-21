@@ -9,7 +9,9 @@ from strategy import candlestick_reversal_strategy, calculate_trade_parameters
 import roostoo
 
 # Configuration
-SYMBOL = "btcusdt"  # Binance symbol
+TRADE_COIN = "BTC" # Edit this to trade a different coin (e.g., "ETH", "SOL")
+SYMBOL = f"{TRADE_COIN.lower()}usdt"  # Binance symbol
+ROOSTOO_SYMBOL = f"{TRADE_COIN}/USD"
 INTERVAL = "5m"     # 5-minute candles
 WS_URL = f"wss://stream.binance.com:9443/ws/{SYMBOL}@kline_{INTERVAL}"
 
@@ -17,8 +19,8 @@ DATA_FILE = "live_data.csv"
 TRADE_LOG_FILE = "live_trades.csv"
 
 HISTORICAL_FILES = [
-    "data/BTCUSD-5m-combined-3months.csv",
-    "data/BTCUSD-5m-2026-03-01-to-2026-03-20.csv"
+    f"data/{TRADE_COIN}USD-5m-combined-3months.csv",
+    f"data/{TRADE_COIN}USD-5m-2026-03-01-to-2026-03-20.csv"
 ]
 
 def load_initial_data():
@@ -67,11 +69,11 @@ klines_df = load_initial_data()
 if not os.path.exists(TRADE_LOG_FILE):
     pd.DataFrame(columns=['timestamp', 'symbol', 'action', 'price', 'quantity', 'source', 'response']).to_csv(TRADE_LOG_FILE, index=False)
 
-def log_trade(action, price, quantity, response_data=""):
+def log_trade(action, price, quantity, symbol=ROOSTOO_SYMBOL, response_data=""):
     """Log executed trades."""
     trade_df = pd.DataFrame([{
         'timestamp': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        'symbol': 'BTC/USD',
+        'symbol': symbol,
         'action': action,
         'price': price,
         'quantity': quantity,
@@ -80,25 +82,32 @@ def log_trade(action, price, quantity, response_data=""):
     }])
     trade_df.to_csv(TRADE_LOG_FILE, mode='a', header=False, index=False)
 
-def execute_signal(signal, current_price, quantity=0.01):
+def execute_signal(signal, current_price, quantity=0.01, symbol=ROOSTOO_SYMBOL):
     """Execute trade on Roostoo based on prediction."""
     
-    # Roostoo BTC/USD AmountPrecision is 5. Using 5 to avoid "quantity step size error"
-    quantity = round(quantity, 5)
+    # Simple precision mapping based on symbol, fallback to 5
+    precision_map = {
+        "BTC/USD": 5,
+        "ETH/USD": 4,
+        "SOL/USD": 2
+    }
+    precision = precision_map.get(symbol, 5)
+    
+    quantity = round(quantity, precision)
     
     if signal == 1:
-        print(f"Executing BUY order on Roostoo mock API at ~{current_price}...")
-        res = roostoo.place_order("BTC/USD", "BUY", quantity, order_type="MARKET")
+        print(f"Executing BUY order on Roostoo mock API at ~{current_price} for {symbol}...")
+        res = roostoo.place_order(symbol, "BUY", quantity, order_type="MARKET")
         print(f"Roostoo Response: {res}")
         if res and res.get("Success"):
-            log_trade('BUY', current_price, quantity, res)
+            log_trade('BUY', current_price, quantity, symbol, res)
             
     elif signal == -1:
-        print(f"Executing SELL order on Roostoo mock API at ~{current_price}...")
-        res = roostoo.place_order("BTC/USD", "SELL", quantity, order_type="MARKET")
+        print(f"Executing SELL order on Roostoo mock API at ~{current_price} for {symbol}...")
+        res = roostoo.place_order(symbol, "SELL", quantity, order_type="MARKET")
         print(f"Roostoo Response: {res}")
         if res and res.get("Success"):
-            log_trade('SELL', current_price, quantity, res)
+            log_trade('SELL', current_price, quantity, symbol, res)
 
 async def check_strategy():
     """Run strategy on stored klines."""
@@ -118,7 +127,7 @@ async def check_strategy():
     
     # Get latest signal
     latest_index = len(df_with_signals) - 1
-    latest_signal = 1 #df_with_signals.iloc[latest_index]['signal']
+    latest_signal = df_with_signals.iloc[latest_index]['signal']
     latest_close = df_with_signals.iloc[latest_index]['close']
     latest_open = df_with_signals.iloc[latest_index]['open']
     
@@ -126,11 +135,18 @@ async def check_strategy():
         signal_type = "BUY" if latest_signal == 1 else "SELL"
         
         # Calculate dynamic trade parameters
-        capital = 100000.0  # Default fallback
+        cash = 100000.0  # Default fallback cash (USD)
+        capital = 100000.0 # Default fallback total portfolio value
         try:
             balance_res = roostoo.get_balance()
             if balance_res and balance_res.get('Success') and 'SpotWallet' in balance_res:
                 wallet = balance_res['SpotWallet']
+                
+                # Assign free/available cash directly from USD balance
+                if 'USD' in wallet:
+                    cash = float(wallet['USD'].get('Free', 0.0))
+                else:
+                    cash = 0.0
                 
                 # Fetch all tickers to value non-USD assets
                 ticker_res = roostoo.get_ticker()
@@ -148,13 +164,13 @@ async def check_strategy():
                             total_capital += amount
                         elif coin in prices:
                             total_capital += amount * prices[coin]
-                        elif coin == 'BTC': # fallback to current candle data
+                        elif coin == TRADE_COIN: # fallback to current candle data if we are tracking this coin
                             total_capital += amount * latest_close
                             
                 capital = total_capital
-                print(f"Live Roostoo Balance Equivalent: ${capital:.2f}")
+                print(f"Live Roostoo Available Cash: ${cash:.2f} | Total Balance Equivalent: ${capital:.2f}")
         except Exception as e:
-            print(f"Error fetching balance from Roostoo: {e}, using default ${capital}.")
+            print(f"Error fetching balance from Roostoo: {e}, using default Capital ${capital}.")
 
         sl, tp, position_size = calculate_trade_parameters(
             df_with_signals, latest_index, latest_signal, latest_open, capital

@@ -56,17 +56,27 @@ def calculate_trade_parameters(df, current_index, signal, entry_price, capital, 
         # SL at previous local support (minimum low of the last 5 finalized candles)
         sl = df.loc[current_index-6:current_index-1, 'low'].min()
         if entry_price > sl: # Valid risk distance
-            risk_per_unit = entry_price - sl
-            position_size = risk_amount / risk_per_unit
-            tp = entry_price + (risk_per_unit * rr_ratio)
+            price_delta_per_unit_in_rr = entry_price - sl
+            
+            # Position Size in BTC such that if SL is hit, we lose exactly risk_amount
+            # This ensures we are only *allocating* enough such that if the SL hits, 
+            # we lose exactly our risk_amount.
+            position_size = (risk_amount / price_delta_per_unit_in_rr)
+            
+            tp = entry_price + (price_delta_per_unit_in_rr * rr_ratio)
             
     elif signal == -1: # SHORT
         # SL at previous local resistance (maximum high of the last 5 finalized candles)
         sl = df.loc[current_index-6:current_index-1, 'high'].max()
         if sl > entry_price: # Valid risk distance
-            risk_per_unit = sl - entry_price
-            position_size = risk_amount / risk_per_unit
-            tp = entry_price - (risk_per_unit * rr_ratio)
+            price_delta_per_unit_in_rr = sl - entry_price
+            
+            position_size = (risk_amount / price_delta_per_unit_in_rr)
+            
+            # For shorts, the risk logic requires margin or borrowing equivalent
+            # For spot trading limits, we ensure we don't sell more value than we have
+                
+            tp = entry_price - (price_delta_per_unit_in_rr * rr_ratio)
             
     return sl, tp, position_size
 

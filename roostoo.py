@@ -1,0 +1,139 @@
+import os
+import requests
+import time
+import hmac
+import hashlib
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# --- API Configuration ---
+BASE_URL = "https://mock-api.roostoo.com"
+API_KEY = os.getenv("TEST_API_KEY")
+SECRET_KEY = os.getenv("TEST_SECRET_KEY")
+
+if not API_KEY or not SECRET_KEY:
+    print("Warning: TEST_API_KEY or TEST_SECRET_KEY not found in .env file.")
+
+# ------------------------------
+# Utility Functions
+# ------------------------------
+
+def _get_timestamp():
+    """Return a 13-digit millisecond timestamp as string."""
+    return str(int(time.time() * 1000))
+
+def _get_signed_headers(payload: dict = None):
+    """
+    Generate signed headers and totalParams for RCL_TopLevelCheck endpoints.
+    """
+    if payload is None:
+        payload = {}
+        
+    payload['timestamp'] = _get_timestamp()
+    sorted_keys = sorted(payload.keys())
+    total_params = "&".join(f"{k}={payload[k]}" for k in sorted_keys)
+
+    signature = hmac.new(
+        SECRET_KEY.encode('utf-8'),
+        total_params.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+
+    headers = {
+        'RST-API-KEY': API_KEY,
+        'MSG-SIGNATURE': signature
+    }
+
+    return headers, payload, total_params
+
+# ------------------------------
+# Public Endpoints
+# ------------------------------
+
+def check_server_time():
+    """Check API server time."""
+    url = f"{BASE_URL}/v3/serverTime"
+    try:
+        res = requests.get(url)
+        res.raise_for_status()
+        return res.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error checking server time: {e}")
+        return None
+
+def get_exchange_info():
+    """Get exchange trading pairs and info."""
+    url = f"{BASE_URL}/v3/exchangeInfo"
+    try:
+        res = requests.get(url)
+        res.raise_for_status()
+        return res.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error getting exchange info: {e}")
+        return None
+
+def get_ticker(pair=None):
+    """Get ticker for one or all pairs."""
+    url = f"{BASE_URL}/v3/ticker"
+    params = {'timestamp': _get_timestamp()}
+    if pair:
+        params['pair'] = pair
+    try:
+        res = requests.get(url, params=params)
+        res.raise_for_status()
+        return res.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error getting ticker: {e}")
+        return None
+
+# ------------------------------
+# Signed Endpoints
+# ------------------------------
+
+def get_balance():
+    """Get wallet balances (RCL_TopLevelCheck)."""
+    url = f"{BASE_URL}/v3/balance"
+    headers, payload, _ = _get_signed_headers({})
+    try:
+        res = requests.get(url, headers=headers, params=payload)
+        res.raise_for_status()
+        return res.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error getting balance: {e}")
+        return None
+
+def place_order(pair_or_coin, side, quantity, price=None, order_type=None):
+    """
+    Place a LIMIT or MARKET order.
+    """
+    url = f"{BASE_URL}/v3/place_order"
+    pair = f"{pair_or_coin}/USD" if "/" not in pair_or_coin else pair_or_coin
+
+    if order_type is None:
+        order_type = "LIMIT" if price is not None else "MARKET"
+
+    if order_type == 'LIMIT' and price is None:
+        print("Error: LIMIT orders require 'price'.")
+        return None
+
+    payload = {
+        'pair': pair,
+        'side': side.upper(),
+        'type': order_type.upper(),
+        'quantity': str(quantity)
+    }
+    if order_type == 'LIMIT':
+        payload['price'] = str(price)
+
+    headers, _, total_params = _get_signed_headers(payload)
+    headers['Content-Type'] = 'application/x-www-form-urlencoded'
+
+    try:
+        res = requests.post(url, headers=headers, data=total_params)
+        res.raise_for_status()
+        return res.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error placing order: {e}")
+        return None

@@ -1,0 +1,1 @@
+for websocket stream data: https://developers.binance.com/docs/binance-spot-api-docs/web-socket-streams

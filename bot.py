@@ -5,7 +5,7 @@ import pandas as pd
 import datetime
 import os
 
-from strategy import candlestick_reversal_strategy
+from strategy import candlestick_reversal_strategy, calculate_trade_parameters
 import roostoo
 
 # Configuration
@@ -80,9 +80,11 @@ def log_trade(action, price, quantity, response_data=""):
     }])
     trade_df.to_csv(TRADE_LOG_FILE, mode='a', header=False, index=False)
 
-def execute_signal(signal, current_price):
+def execute_signal(signal, current_price, quantity=0.01):
     """Execute trade on Roostoo based on prediction."""
-    quantity = 0.01  # Fixed quantity for testing
+    
+    # Roostoo BTC/USD AmountPrecision is 5. Using 5 to avoid "quantity step size error"
+    quantity = round(quantity, 5)
     
     if signal == 1:
         print(f"Executing BUY order on Roostoo mock API at ~{current_price}...")
@@ -115,13 +117,55 @@ async def check_strategy():
     df_with_signals = candlestick_reversal_strategy(df)
     
     # Get latest signal
-    latest_signal = df_with_signals.iloc[-1]['signal']
-    latest_close = df_with_signals.iloc[-1]['close']
+    latest_index = len(df_with_signals) - 1
+    latest_signal = 1 #df_with_signals.iloc[latest_index]['signal']
+    latest_close = df_with_signals.iloc[latest_index]['close']
+    latest_open = df_with_signals.iloc[latest_index]['open']
     
     if latest_signal != 0:
         signal_type = "BUY" if latest_signal == 1 else "SELL"
+        
+        # Calculate dynamic trade parameters
+        capital = 100000.0  # Default fallback
+        try:
+            balance_res = roostoo.get_balance()
+            if balance_res and balance_res.get('Success') and 'SpotWallet' in balance_res:
+                wallet = balance_res['SpotWallet']
+                
+                # Fetch all tickers to value non-USD assets
+                ticker_res = roostoo.get_ticker()
+                prices = {}
+                if ticker_res and ticker_res.get('Success') and 'Data' in ticker_res:
+                    for pair, data in ticker_res['Data'].items():
+                        coin = pair.split('/')[0]
+                        prices[coin] = data.get('LastPrice', 0.0)
+                
+                total_capital = 0.0
+                for coin, balances in wallet.items():
+                    amount = balances.get('Free', 0.0) + balances.get('Lock', 0.0)
+                    if amount > 0:
+                        if coin == 'USD':
+                            total_capital += amount
+                        elif coin in prices:
+                            total_capital += amount * prices[coin]
+                        elif coin == 'BTC': # fallback to current candle data
+                            total_capital += amount * latest_close
+                            
+                capital = total_capital
+                print(f"Live Roostoo Balance Equivalent: ${capital:.2f}")
+        except Exception as e:
+            print(f"Error fetching balance from Roostoo: {e}, using default ${capital}.")
+
+        sl, tp, position_size = calculate_trade_parameters(
+            df_with_signals, latest_index, latest_signal, latest_open, capital
+        )
+        
         print(f"Signal Detected: {signal_type} at {latest_close}")
-        execute_signal(latest_signal, latest_close)
+        if position_size > 0:
+            print(f"Calculated Trade Params -> Size: {position_size:.4f}, SL: {sl:.2f}, TP: {tp:.2f}")
+            execute_signal(latest_signal, latest_close, quantity=position_size)
+        else:
+            print("Trade skipped: Insufficient data for Stop Loss calculation.")
     else:
         print("No trade signal generated.")
 

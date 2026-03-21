@@ -86,6 +86,9 @@ if balances:
                 pair = f"{coin}/USD"
                 ticker_data = tickers.get(pair, {})
                 price_in_usd = float(ticker_data.get('LastPrice', 0.0))
+                # Fallback to local live_data close price for BTC if API fails
+                if price_in_usd == 0.0 and coin == 'BTC' and not df_data.empty:
+                    price_in_usd = df_data.iloc[-1]['close']
             
             value_usd = total_amount * price_in_usd
             total_portfolio_value += value_usd

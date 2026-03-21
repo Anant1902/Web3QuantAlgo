@@ -65,16 +65,18 @@ klines_df = load_initial_data()
 
 # Initialize files
 if not os.path.exists(TRADE_LOG_FILE):
-    pd.DataFrame(columns=['timestamp', 'symbol', 'action', 'price', 'quantity']).to_csv(TRADE_LOG_FILE, index=False)
+    pd.DataFrame(columns=['timestamp', 'symbol', 'action', 'price', 'quantity', 'source', 'response']).to_csv(TRADE_LOG_FILE, index=False)
 
-def log_trade(action, price, quantity):
+def log_trade(action, price, quantity, response_data=""):
     """Log executed trades."""
     trade_df = pd.DataFrame([{
-        'timestamp': datetime.datetime.now().isoformat(),
+        'timestamp': datetime.datetime.now(datetime.timezone.utc).isoformat(),
         'symbol': 'BTC/USD',
         'action': action,
         'price': price,
-        'quantity': quantity
+        'quantity': quantity,
+        'source': 'Bot',
+        'response': json.dumps(response_data) if isinstance(response_data, dict) else str(response_data)
     }])
     trade_df.to_csv(TRADE_LOG_FILE, mode='a', header=False, index=False)
 
@@ -87,14 +89,14 @@ def execute_signal(signal, current_price):
         res = roostoo.place_order("BTC/USD", "BUY", quantity, order_type="MARKET")
         print(f"Roostoo Response: {res}")
         if res and res.get("Success"):
-            log_trade('BUY', current_price, quantity)
+            log_trade('BUY', current_price, quantity, res)
             
     elif signal == -1:
         print(f"Executing SELL order on Roostoo mock API at ~{current_price}...")
         res = roostoo.place_order("BTC/USD", "SELL", quantity, order_type="MARKET")
         print(f"Roostoo Response: {res}")
         if res and res.get("Success"):
-            log_trade('SELL', current_price, quantity)
+            log_trade('SELL', current_price, quantity, res)
 
 async def check_strategy():
     """Run strategy on stored klines."""

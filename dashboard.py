@@ -3,7 +3,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import time
 import os
-from datetime import datetime
+import json
+from datetime import datetime, timezone
 
 import roostoo
 
@@ -20,9 +21,10 @@ def load_data():
         try:
             df = pd.read_csv(DATA_FILE)
             if not df.empty:
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], format='ISO8601', utc=True)
             return df
-        except Exception:
+        except Exception as e:
+            print(f"Error loading data: {e}")
             pass
     return pd.DataFrame()
 
@@ -31,9 +33,10 @@ def load_trades():
         try:
             df = pd.read_csv(TRADE_LOG_FILE)
             if not df.empty:
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], format='ISO8601', utc=True)
             return df
-        except Exception:
+        except Exception as e:
+            print(f"Error loading trades: {e}")
             pass
     return pd.DataFrame()
 
@@ -53,14 +56,7 @@ def get_roostoo_pending_orders():
     return res.get('OrderMatched', []) if res and res.get('Success') else []
 
 # -- Sidebar: Refresh Logic --
-st.sidebar.title("Controls")
-manual_refresh = st.sidebar.button("🔄 Manual Refresh")
-auto_refresh = st.sidebar.checkbox("Auto Refresh (10s)", value=False)
-
-if auto_refresh:
-    time.sleep(10)
-    st.rerun()
-
+manual_refresh = st.button("🔄 Manual Refresh")
 # -- Dashboard Header --
 st.title("📈 Crypto Trading Bot Dashboard")
 
@@ -108,7 +104,8 @@ start_capital = DEFAULT_INIT_BALANCE
 diff_to_init = total_portfolio_value - start_capital
 pct_capital = (diff_to_init / start_capital) * 100 if start_capital > 0 else 0
 
-col1.metric("Total Portfolio Value", f"${total_portfolio_value:,.2f}", f"${diff_to_init:+,.2f} ({pct_capital:+.2f}%)")
+delta_color = "normal" if diff_to_init >= 0 else "inverse"
+col1.metric("Total Portfolio Value", f"${total_portfolio_value:,.2f}", f"${diff_to_init:+.2f} ({pct_capital:+.2f}%)", delta_color=delta_color)
 col2.metric("Pending Orders", len(pending_orders))
 col3.metric("Live Monitored Coins", len(tickers) if tickers else 0)
 col4.metric("Total Executed Signals", len(df_trades))
@@ -127,7 +124,6 @@ if holdings:
     holdings_df['Est. USD Value'] = holdings_df['Est. USD Value'].apply(lambda x: f"${x:,.2f}")
     
     st.dataframe(holdings_df.drop(columns=['Est. USD Value ($)']).set_index('Asset'), use_container_width=True)
-    st.markdown(f"**Total Portfolio Value (incl. USD):** ${total_portfolio_value:,.2f}")
 else:
     st.info("No balances found or unable to fetch from Roostoo API.")
 
@@ -188,7 +184,7 @@ st.header("3. Market & Activity")
 col_curr, col_act = st.columns([1, 1])
 
 with col_curr:
-    st.subheader("Top Current Prices")
+    st.subheader("Major Pair Current Prices")
     if tickers:
         # Show some major pairs
         top_pairs = ['BTC/USD', 'ETH/USD', 'BNB/USD', 'SOL/USD', 'XRP/USD']
@@ -213,6 +209,8 @@ with col_curr:
     if pending_orders:
         parsed_pending = []
         for po in pending_orders:
+            if po.get('Status') not in ('PENDING', 'PARTIALLY_FILLED'):
+                continue
             ts_ms = int(po.get('CreateTimestamp', 0))
             dt_str = datetime.fromtimestamp(ts_ms/1000).strftime('%Y-%m-%d %H:%M:%S') if ts_ms > 0 else 'Unknown'
             parsed_pending.append({
@@ -225,18 +223,23 @@ with col_curr:
                 "Qty": float(po.get('Quantity', 0)),
                 "Remaining": float(po.get('Quantity', 0)) - float(po.get('FilledQuantity', 0))
             })
-        st.dataframe(pd.DataFrame(parsed_pending), use_container_width=True)
-        
-        # Add a quick cancel functionality for fun (optional, using selectbox)
-        cancel_id = st.selectbox("Cancel Order ID", options=[p["Order ID"] for p in parsed_pending])
-        if st.button("Cancel Selected Order"):
-            res = roostoo.cancel_order(order_id=cancel_id)
-            if res and res.get('Success'):
-                st.success(f"Order {cancel_id} cancelled.")
-                time.sleep(1)
-                st.rerun()
-            else:
-                st.error("Failed to cancel order.")
+            
+        if parsed_pending:
+            st.dataframe(pd.DataFrame(parsed_pending), use_container_width=True)
+            
+            # Add a quick cancel functionality for fun (optional, using selectbox)
+            cancel_id = st.selectbox("Cancel Order ID", options=[p["Order ID"] for p in parsed_pending])
+            if st.button("Cancel Selected Order"):
+                res = roostoo.cancel_order(order_id=cancel_id)
+                if res and res.get('Success'):
+                    st.success(f"Order {cancel_id} cancelled.")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    err_msg = res.get("ErrMsg", "API Error") if res else "No response"
+                    st.error(f"Failed to cancel order: {err_msg}")
+        else:
+            st.info("No active pending orders.")
     else:
         st.info("No pending orders.")
 
@@ -267,18 +270,35 @@ with st.form("manual_order_form"):
         price_input = st.number_input("Limit Price (only for LIMIT)", min_value=0.0, value=90000.0, step=100.0)
 
     submitted = st.form_submit_button("🚀 Submit Order via Roostoo API")
-    if submitted:
-        if type_input == "LIMIT" and price_input <= 0:
-            st.error("Please enter a valid price for LIMIT orders.")
-        else:
-            p = price_input if type_input == "LIMIT" else None
-            out = roostoo.place_order(pair_or_coin=pair_input, side=side_input, quantity=qty_input, price=p, order_type=type_input)
+
+# Moved outside the form to ensure it only executes during the form submission rerun
+if submitted:
+    if type_input == "LIMIT" and price_input <= 0:
+        st.error("Please enter a valid price for LIMIT orders.")
+    else:
+        p = price_input if type_input == "LIMIT" else None
+        out = roostoo.place_order(pair_or_coin=pair_input, side=side_input, quantity=qty_input, price=p, order_type=type_input)
+        
+        if out and out.get("Success"):
+            st.success(f"Successfully placed {side_input} {type_input} order for {qty_input} {pair_input}!")
             
-            if out and out.get("Success"):
-                st.success(f"Successfully placed {side_input} {type_input} order for {qty_input} {pair_input}!")
-                # Refresh logic here immediately updates the tables
-                time.sleep(1)
-                st.rerun()
-            else:
-                err_msg = out.get("ErrMsg", "Unknown Error") if out else "API Error"
-                st.error(f"Failed to place order: {err_msg}")
+            # If market or limit order, log it directly simulating bot execution
+            # For market orders, we simulate the execution price from last ticker. For limits, use the input price.
+            exec_price = tickers.get(pair_input, {}).get("LastPrice", 0) if type_input == "MARKET" else price_input
+            trade_df = pd.DataFrame([{
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'symbol': pair_input,
+                'action': side_input,
+                'price': float(exec_price),
+                'quantity': qty_input,
+                'source': f'Manual ({type_input})',
+                'response': json.dumps(out)
+            }])
+            trade_df.to_csv(TRADE_LOG_FILE, mode='a', header=not os.path.exists(TRADE_LOG_FILE), index=False)
+
+            # Refresh logic here immediately updates the tables
+            time.sleep(1)
+            st.rerun()
+        else:
+            err_msg = out.get("ErrMsg", "Unknown Error") if out else "API Error"
+            st.error(f"Failed to place order: {err_msg}")

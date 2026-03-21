@@ -144,8 +144,9 @@ def query_order(order_id=None, pair=None, pending_only=None):
     payload = {}
     if order_id:
         payload['order_id'] = str(order_id)
-    elif pair:
-        payload['pair'] = pair
+    else:
+        if pair:
+            payload['pair'] = pair
         if pending_only is not None:
             payload['pending_only'] = 'TRUE' if pending_only else 'FALSE'
 

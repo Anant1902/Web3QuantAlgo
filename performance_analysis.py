@@ -112,28 +112,32 @@ def backtest_strategy(df, initial_capital=1000000.0, risk_per_trade=0.02, rr_rat
                 # Conservative approach: Check if SL is hit.
                 if curr_row['low'] <= sl:
                     loss = (entry_price - sl) * position_size
-                    capital -= loss
-                    current_trade.update({'exit_i': i, 'exit_price': sl, 'pnl': -loss, 'reason': 'SL'})
+                    exit_fee = position_size * sl * 0.001  # Taker fee for SL (market order)
+                    capital -= (loss + exit_fee)
+                    current_trade.update({'exit_i': i, 'exit_price': sl, 'pnl': -loss - exit_fee - current_trade['entry_fee'], 'reason': 'SL'})
                     trades.append(current_trade)
                     in_position = False
                 elif curr_row['high'] >= tp:
                     profit = (tp - entry_price) * position_size
-                    capital += profit
-                    current_trade.update({'exit_i': i, 'exit_price': tp, 'pnl': profit, 'reason': 'TP'})
+                    exit_fee = position_size * tp * 0.0005  # Maker fee for TP (limit order)
+                    capital += (profit - exit_fee)
+                    current_trade.update({'exit_i': i, 'exit_price': tp, 'pnl': profit - exit_fee - current_trade['entry_fee'], 'reason': 'TP'})
                     trades.append(current_trade)
                     in_position = False
                     
             elif position_type == 'SHORT':
                 if curr_row['high'] >= sl:
                     loss = (sl - entry_price) * position_size
-                    capital -= loss
-                    current_trade.update({'exit_i': i, 'exit_price': sl, 'pnl': -loss, 'reason': 'SL'})
+                    exit_fee = position_size * sl * 0.001  # Taker fee for SL (market order)
+                    capital -= (loss + exit_fee)
+                    current_trade.update({'exit_i': i, 'exit_price': sl, 'pnl': -loss - exit_fee - current_trade['entry_fee'], 'reason': 'SL'})
                     trades.append(current_trade)
                     in_position = False
                 elif curr_row['low'] <= tp:
                     profit = (entry_price - tp) * position_size
-                    capital += profit
-                    current_trade.update({'exit_i': i, 'exit_price': tp, 'pnl': profit, 'reason': 'TP'})
+                    exit_fee = position_size * tp * 0.0005  # Maker fee for TP (limit order)
+                    capital += (profit - exit_fee)
+                    current_trade.update({'exit_i': i, 'exit_price': tp, 'pnl': profit - exit_fee - current_trade['entry_fee'], 'reason': 'TP'})
                     trades.append(current_trade)
                     in_position = False
         
@@ -154,12 +158,13 @@ def backtest_strategy(df, initial_capital=1000000.0, risk_per_trade=0.02, rr_rat
                 if entry_price > sl: # Valid risk distance
                     risk_per_unit = entry_price - sl
                     risk_amount = capital * risk_per_trade
-                    position_size = risk_amount / risk_per_unit
                     
-                    # Ensure no leverage: position notional value cannot exceed current capital
-                    max_position_size = capital / entry_price
-                    if position_size > max_position_size:
-                        position_size = max_position_size
+                    taker_fee_rate = 0.001
+                    max_position_size = capital / (entry_price * (1 + taker_fee_rate))
+                    position_size = min(risk_amount / risk_per_unit, max_position_size)
+                    
+                    entry_fee = position_size * entry_price * taker_fee_rate
+                    capital -= entry_fee
                     
                     # Set TP to default R:R ratio, but override if strategy provides one (like FVG gap area)
                     tp = entry_price + (risk_per_unit * rr_ratio)
@@ -169,7 +174,7 @@ def backtest_strategy(df, initial_capital=1000000.0, risk_per_trade=0.02, rr_rat
                     # Ensure TP is actually above entry price (in case the gap was already breached)
                     if tp > entry_price:
                         in_position = True
-                        current_trade = {'type': 'LONG', 'entry_i': i, 'entry_price': entry_price, 'size': position_size}
+                        current_trade = {'type': 'LONG', 'entry_i': i, 'entry_price': entry_price, 'size': position_size, 'entry_fee': entry_fee}
                     
             elif prev_signal == -1:
                 # Sell signal
@@ -183,12 +188,13 @@ def backtest_strategy(df, initial_capital=1000000.0, risk_per_trade=0.02, rr_rat
                 if sl > entry_price: # Valid risk distance
                     risk_per_unit = sl - entry_price
                     risk_amount = capital * risk_per_trade
-                    position_size = risk_amount / risk_per_unit
                     
-                    # Ensure no leverage: position notional value cannot exceed current capital
-                    max_position_size = capital / entry_price
-                    if position_size > max_position_size:
-                        position_size = max_position_size
+                    taker_fee_rate = 0.001
+                    max_position_size = capital / (entry_price * (1 + taker_fee_rate))
+                    position_size = min(risk_amount / risk_per_unit, max_position_size)
+                    
+                    entry_fee = position_size * entry_price * taker_fee_rate
+                    capital -= entry_fee
                     
                     # Set TP to default R:R ratio, but override if strategy provides one (like FVG gap area)
                     tp = entry_price - (risk_per_unit * rr_ratio)
@@ -198,7 +204,7 @@ def backtest_strategy(df, initial_capital=1000000.0, risk_per_trade=0.02, rr_rat
                     # Ensure TP is actually below entry price
                     if entry_price > tp:
                         in_position = True
-                        current_trade = {'type': 'SHORT', 'entry_i': i, 'entry_price': entry_price, 'size': position_size}
+                        current_trade = {'type': 'SHORT', 'entry_i': i, 'entry_price': entry_price, 'size': position_size, 'entry_fee': entry_fee}
 
     df['capital'] = capital_history
     return df, trades

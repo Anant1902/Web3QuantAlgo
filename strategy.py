@@ -33,9 +33,9 @@ def candlestick_reversal_strategy(data):
         if lower_wick > 2 * body and upper_wick < body and prev_close < prev_open:
             signals[i] = 1  # Buy signal
         
-        # Shooting star (bearish reversal)
-        elif upper_wick > 2 * body and lower_wick < body and prev_close > prev_open:
-            signals[i] = -1  # Sell signal
+        # Shooting star pattern (bearish reversal) is disabled to prevent shorting
+        # elif upper_wick > 2 * body and lower_wick < body and prev_close > prev_open:
+        #     signals[i] = -1  # Sell signal
     
     df['signal'] = signals
     return df

@@ -9,7 +9,7 @@ from strategy import candlestick_reversal_strategy, calculate_trade_parameters
 import roostoo
 
 # Configuration
-TRADE_COIN = "XRP" # Edit this to trade a different coin (e.g., "ETH", "SOL")
+TRADE_COIN = "SOL" # Edit this to trade a different coin (e.g., "ETH", "SOL")
 SYMBOL = f"{TRADE_COIN.lower()}usdt"  # Binance symbol
 ROOSTOO_SYMBOL = f"{TRADE_COIN}/USD"
 INTERVAL = "5m"     # 5-minute candles

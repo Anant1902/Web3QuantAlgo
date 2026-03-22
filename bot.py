@@ -173,6 +173,17 @@ async def check_strategy():
                     save_position_state(position_state)
                     return
                     
+        # Check if strategy gave a bearish/sell signal to close position early
+        if latest_signal == -1:
+            print(f"Strategy Sell Signal (-1) Detected! Closing position early at {latest_close}.")
+            if position_state.get("tp_order_id"):
+                roostoo.cancel_order(order_id=position_state["tp_order_id"])
+            quantity = position_state["quantity"]
+            execute_signal(-1, latest_close, quantity=quantity)
+            position_state = {}
+            save_position_state(position_state)
+            return
+            
         # Check Stop Loss in real time
         sl = position_state["sl"]
         if latest_close <= sl:
@@ -257,7 +268,10 @@ async def check_strategy():
         else:
             print("Trade skipped: Insufficient data for Stop Loss calculation.")
     else:
-        print("No trade signal generated.")
+        if latest_signal == -1:
+            print("Bearish reversal detected, but safely ignored (No active position to close).")
+        else:
+            print("No trade signal generated.")
 
 async def consume_kline_stream():
     """Consume websocket and process closed candles."""
@@ -286,7 +300,10 @@ async def consume_kline_stream():
                     
                     df_new = pd.DataFrame([new_row])
                     # Update local dataframe
-                    klines_df = pd.concat([klines_df, df_new], ignore_index=True)
+                    if klines_df.empty:
+                        klines_df = df_new
+                    else:
+                        klines_df = pd.concat([klines_df, df_new], ignore_index=True)
                     # Convert object types before concatenation, handling possible warnings
                     
                     # Ensure timestamp format is consistent

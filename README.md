@@ -1,9 +1,9 @@
 For running bot:
-1. pip install -e .
-1. python bot.py
+1. uv sync
+1. uv run bot.py
 
 For running dashboard:
-1. streamlit run dashboard.py
+1. uv run streamlit run dashboard.py
 
 
 

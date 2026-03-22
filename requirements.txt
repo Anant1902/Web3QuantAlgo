@@ -1,8 +1,0 @@
-requests
-websocket-client
-websockets
-pandas
-streamlit
-plotly
-python-dotenv
-jinja2

@@ -330,6 +330,53 @@ async def main():
     else:
         print("Warning: Could not fetch exchange constraints.")
         
+    # Execute an instantaneous small trade if we don't hold an active position
+    state = load_position_state()
+    if not state.get("active"):
+        print("Executing instantaneous small trade at startup...")
+        ticker = roostoo.get_ticker(ROOSTOO_SYMBOL)
+        if ticker and ticker.get("Success") and "Data" in ticker and ROOSTOO_SYMBOL in ticker["Data"]:
+            try:
+                last_price = float(ticker["Data"][ROOSTOO_SYMBOL]["LastPrice"])
+                
+                # Execute a small nominal $50 test entry universally
+                invest_amount = 50.0
+                qty = invest_amount / last_price
+                
+                # Use standard 2% SL, 6% TP (1:3 risk reward)
+                sl = last_price * 0.98
+                tp = last_price * 1.06
+                
+                print(f"Startup Buy Parameters -> Size: {qty:.4f}, SL: {sl:.2f}, TP: {tp:.2f}")
+                res = execute_signal(1, last_price, quantity=qty)
+                
+                if res and res.get("Success"):
+                    price_precision = get_price_precision(ROOSTOO_SYMBOL)
+                    rounded_tp = round(tp, price_precision)
+                    precision_amt = get_precision(ROOSTOO_SYMBOL)
+                    rounded_qty = round(qty, precision_amt)
+                    
+                    print(f"Placing LIMIT SELL Take Profit at {rounded_tp}")
+                    tp_res = roostoo.place_order(ROOSTOO_SYMBOL, "SELL", rounded_qty, price=rounded_tp, order_type="LIMIT")
+                    
+                    tp_order_id = None
+                    if tp_res and tp_res.get("Success"):
+                        tp_order_id = tp_res.get("OrderDetail", {}).get("OrderID")
+                        
+                    new_state = {
+                        "active": True,
+                        "entry_price": last_price,
+                        "quantity": rounded_qty,
+                        "sl": sl,
+                        "tp": rounded_tp,
+                        "tp_order_id": tp_order_id
+                    }
+                    save_position_state(new_state)
+            except Exception as e:
+                print(f"Startup trade failed: {e}")
+        else:
+            print("Failed to fetch ticker for instantaneous start.")
+
     while True:
         try:
             await consume_kline_stream()

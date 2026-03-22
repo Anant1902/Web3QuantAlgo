@@ -307,7 +307,7 @@ async def main():
     global exchange_info_cache
     print("Fetching exchange rules...")
     info = roostoo.get_exchange_info()
-    if info and info.get("Success") and "TradePairs" in info:
+    if info and "TradePairs" in info:
         exchange_info_cache = info["TradePairs"]
         print("Exchange constraints loaded.")
     else:

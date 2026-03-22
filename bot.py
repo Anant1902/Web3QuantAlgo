@@ -23,6 +23,35 @@ HISTORICAL_FILES = [
     f"data/{TRADE_COIN}USD-5m-2026-03-01-to-2026-03-20.csv"
 ]
 
+STATE_FILE = "position_state.json"
+exchange_info_cache = {}
+
+def load_position_state():
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_position_state(state):
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f)
+
+position_state = load_position_state()
+
+def get_precision(symbol, default=5):
+    if symbol in exchange_info_cache:
+        return exchange_info_cache[symbol].get("AmountPrecision", default)
+    return default
+    
+def get_price_precision(symbol, default=2):
+    if symbol in exchange_info_cache:
+        return exchange_info_cache[symbol].get("PricePrecision", default)
+    return default
+
+
 def load_initial_data():
     if os.path.exists(DATA_FILE):
         try:
@@ -85,14 +114,7 @@ def log_trade(action, price, quantity, symbol=ROOSTOO_SYMBOL, response_data=""):
 def execute_signal(signal, current_price, quantity=0.01, symbol=ROOSTOO_SYMBOL):
     """Execute trade on Roostoo based on prediction."""
     
-    # Simple precision mapping based on symbol, fallback to 5
-    precision_map = {
-        "BTC/USD": 5,
-        "ETH/USD": 4,
-        "SOL/USD": 2
-    }
-    precision = precision_map.get(symbol, 5)
-    
+    precision = get_precision(symbol, default=5)
     quantity = round(quantity, precision)
     
     if signal == 1:
@@ -101,6 +123,7 @@ def execute_signal(signal, current_price, quantity=0.01, symbol=ROOSTOO_SYMBOL):
         print(f"Roostoo Response: {res}")
         if res and res.get("Success"):
             log_trade('BUY', current_price, quantity, symbol, res)
+            return res
             
     elif signal == -1:
         print(f"Executing SELL order on Roostoo mock API at ~{current_price} for {symbol}...")
@@ -108,6 +131,9 @@ def execute_signal(signal, current_price, quantity=0.01, symbol=ROOSTOO_SYMBOL):
         print(f"Roostoo Response: {res}")
         if res and res.get("Success"):
             log_trade('SELL', current_price, quantity, symbol, res)
+            return res
+            
+    return None
 
 async def check_strategy():
     """Run strategy on stored klines."""
@@ -131,24 +157,51 @@ async def check_strategy():
     latest_close = df_with_signals.iloc[latest_index]['close']
     latest_open = df_with_signals.iloc[latest_index]['open']
     
-    if latest_signal != 0:
-        signal_type = "BUY" if latest_signal == 1 else "SELL"
-        
-        # Calculate dynamic trade parameters
-        cash = 100000.0  # Default fallback cash (USD)
-        capital = 100000.0 # Default fallback total portfolio value
+    global position_state
+    
+    # 1. Manage Active Position (Exit Strategy)
+    if position_state.get("active"):
+        # Check if the TP order was filled
+        tp_order_id = position_state.get("tp_order_id")
+        if tp_order_id:
+            order_res = roostoo.query_order(order_id=tp_order_id)
+            if order_res and order_res.get("Success"):
+                matched = order_res.get("OrderMatched", [])
+                if matched and matched[0].get("Status") == "FILLED":
+                    print(f"Take Profit hit! Position closed.")
+                    position_state = {}
+                    save_position_state(position_state)
+                    return
+                    
+        # Check Stop Loss in real time
+        sl = position_state["sl"]
+        if latest_close <= sl:
+            print(f"Stop Loss Triggered! Price {latest_close} <= SL {sl}. Closing position.")
+            if position_state.get("tp_order_id"):
+                roostoo.cancel_order(order_id=position_state["tp_order_id"])
+            quantity = position_state["quantity"]
+            execute_signal(-1, latest_close, quantity=quantity)
+            position_state = {}
+            save_position_state(position_state)
+            return
+
+        print(f"Holding active position... SL: {sl:.4f}")
+        return
+
+    # 2. Look for Entry (Long Only)
+    if latest_signal == 1:
+        signal_type = "BUY"
+        cash = 100000.0  
+        capital = 100000.0
         try:
             balance_res = roostoo.get_balance()
-            if balance_res and balance_res.get('Success') and 'SpotWallet' in balance_res:
-                wallet = balance_res['SpotWallet']
-                
-                # Assign free/available cash directly from USD balance
+            if balance_res and balance_res.get('Success') and 'Wallet' in balance_res:
+                wallet = balance_res['Wallet']
                 if 'USD' in wallet:
                     cash = float(wallet['USD'].get('Free', 0.0))
                 else:
                     cash = 0.0
                 
-                # Fetch all tickers to value non-USD assets
                 ticker_res = roostoo.get_ticker()
                 prices = {}
                 if ticker_res and ticker_res.get('Success') and 'Data' in ticker_res:
@@ -164,22 +217,43 @@ async def check_strategy():
                             total_capital += amount
                         elif coin in prices:
                             total_capital += amount * prices[coin]
-                        elif coin == TRADE_COIN: # fallback to current candle data if we are tracking this coin
+                        elif coin == TRADE_COIN:
                             total_capital += amount * latest_close
-                            
                 capital = total_capital
                 print(f"Live Roostoo Available Cash: ${cash:.2f} | Total Balance Equivalent: ${capital:.2f}")
         except Exception as e:
             print(f"Error fetching balance from Roostoo: {e}, using default Capital ${capital}.")
 
         sl, tp, position_size = calculate_trade_parameters(
-            df_with_signals, latest_index, latest_signal, latest_open, capital
+            df_with_signals, latest_index, latest_signal, latest_open, capital, available_cash=cash
         )
         
         print(f"Signal Detected: {signal_type} at {latest_close}")
         if position_size > 0:
             print(f"Calculated Trade Params -> Size: {position_size:.4f}, SL: {sl:.2f}, TP: {tp:.2f}")
-            execute_signal(latest_signal, latest_close, quantity=position_size)
+            res = execute_signal(latest_signal, latest_close, quantity=position_size)
+            if res and res.get("Success"):
+                price_precision = get_price_precision(ROOSTOO_SYMBOL)
+                rounded_tp = round(tp, price_precision)
+                precision_amt = get_precision(ROOSTOO_SYMBOL)
+                rounded_qty = round(position_size, precision_amt)
+                
+                print(f"Placing LIMIT SELL Take Profit at {rounded_tp}")
+                tp_res = roostoo.place_order(ROOSTOO_SYMBOL, "SELL", rounded_qty, price=rounded_tp, order_type="LIMIT")
+                
+                tp_order_id = None
+                if tp_res and tp_res.get("Success"):
+                    tp_order_id = tp_res.get("OrderDetail", {}).get("OrderID")
+                    
+                position_state = {
+                    "active": True,
+                    "entry_price": latest_close,
+                    "quantity": rounded_qty,
+                    "sl": sl,
+                    "tp": rounded_tp,
+                    "tp_order_id": tp_order_id
+                }
+                save_position_state(position_state)
         else:
             print("Trade skipped: Insufficient data for Stop Loss calculation.")
     else:
@@ -230,6 +304,15 @@ async def consume_kline_stream():
                 break
 
 async def main():
+    global exchange_info_cache
+    print("Fetching exchange rules...")
+    info = roostoo.get_exchange_info()
+    if info and info.get("Success") and "TradePairs" in info:
+        exchange_info_cache = info["TradePairs"]
+        print("Exchange constraints loaded.")
+    else:
+        print("Warning: Could not fetch exchange constraints.")
+        
     while True:
         try:
             await consume_kline_stream()

@@ -40,12 +40,15 @@ def candlestick_reversal_strategy(data):
     df['signal'] = signals
     return df
 
-def calculate_trade_parameters(df, current_index, signal, entry_price, capital, risk_per_trade=0.02, rr_ratio=3.0):
+def calculate_trade_parameters(df, current_index, signal, entry_price, capital, available_cash=None, risk_per_trade=0.02, rr_ratio=3.0):
     """
     Calculates Stop Loss (SL), Take Profit (TP), and Position Size based on risk management rules.
     """
     if current_index <= 5:
         return 0.0, 0.0, 0.0
+        
+    if available_cash is None:
+        available_cash = capital
         
     risk_amount = capital * risk_per_trade
     sl = 0.0
@@ -63,6 +66,10 @@ def calculate_trade_parameters(df, current_index, signal, entry_price, capital, 
             # we lose exactly our risk_amount.
             position_size = (risk_amount / price_delta_per_unit_in_rr)
             
+            max_size = available_cash / entry_price
+            if position_size > max_size:
+                position_size = max_size
+            
             tp = entry_price + (price_delta_per_unit_in_rr * rr_ratio)
             
     elif signal == -1: # SHORT
@@ -75,6 +82,9 @@ def calculate_trade_parameters(df, current_index, signal, entry_price, capital, 
             
             # For shorts, the risk logic requires margin or borrowing equivalent
             # For spot trading limits, we ensure we don't sell more value than we have
+            max_size = available_cash / entry_price
+            if position_size > max_size:
+                position_size = max_size
                 
             tp = entry_price - (price_delta_per_unit_in_rr * rr_ratio)
             

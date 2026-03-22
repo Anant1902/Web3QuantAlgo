@@ -148,14 +148,28 @@ def backtest_strategy(df, initial_capital=1000000.0, risk_per_trade=0.02, rr_rat
                 entry_price = curr_row['open']
                 # SL at previous local support (minimum low of the last 5 finalized candles)
                 sl = df.loc[i-6:i-1, 'low'].min()
+                if 'suggested_sl' in df.columns and not pd.isna(df.loc[i-1, 'suggested_sl']):
+                    sl = df.loc[i-1, 'suggested_sl']
                 
                 if entry_price > sl: # Valid risk distance
                     risk_per_unit = entry_price - sl
                     risk_amount = capital * risk_per_trade
                     position_size = risk_amount / risk_per_unit
+                    
+                    # Ensure no leverage: position notional value cannot exceed current capital
+                    max_position_size = capital / entry_price
+                    if position_size > max_position_size:
+                        position_size = max_position_size
+                    
+                    # Set TP to default R:R ratio, but override if strategy provides one (like FVG gap area)
                     tp = entry_price + (risk_per_unit * rr_ratio)
-                    in_position = True
-                    current_trade = {'type': 'LONG', 'entry_i': i, 'entry_price': entry_price, 'size': position_size}
+                    if 'suggested_tp' in df.columns and not pd.isna(df.loc[i-1, 'suggested_tp']):
+                        tp = df.loc[i-1, 'suggested_tp']
+                        
+                    # Ensure TP is actually above entry price (in case the gap was already breached)
+                    if tp > entry_price:
+                        in_position = True
+                        current_trade = {'type': 'LONG', 'entry_i': i, 'entry_price': entry_price, 'size': position_size}
                     
             elif prev_signal == -1:
                 # Sell signal
@@ -163,14 +177,28 @@ def backtest_strategy(df, initial_capital=1000000.0, risk_per_trade=0.02, rr_rat
                 entry_price = curr_row['open']
                 # SL at previous local resistance (maximum high of the last 5 finalized candles)
                 sl = df.loc[i-6:i-1, 'high'].max()
+                if 'suggested_sl' in df.columns and not pd.isna(df.loc[i-1, 'suggested_sl']):
+                    sl = df.loc[i-1, 'suggested_sl']
                 
                 if sl > entry_price: # Valid risk distance
                     risk_per_unit = sl - entry_price
                     risk_amount = capital * risk_per_trade
                     position_size = risk_amount / risk_per_unit
+                    
+                    # Ensure no leverage: position notional value cannot exceed current capital
+                    max_position_size = capital / entry_price
+                    if position_size > max_position_size:
+                        position_size = max_position_size
+                    
+                    # Set TP to default R:R ratio, but override if strategy provides one (like FVG gap area)
                     tp = entry_price - (risk_per_unit * rr_ratio)
-                    in_position = True
-                    current_trade = {'type': 'SHORT', 'entry_i': i, 'entry_price': entry_price, 'size': position_size}
+                    if 'suggested_tp' in df.columns and not pd.isna(df.loc[i-1, 'suggested_tp']):
+                        tp = df.loc[i-1, 'suggested_tp']
+                        
+                    # Ensure TP is actually below entry price
+                    if entry_price > tp:
+                        in_position = True
+                        current_trade = {'type': 'SHORT', 'entry_i': i, 'entry_price': entry_price, 'size': position_size}
 
     df['capital'] = capital_history
     return df, trades

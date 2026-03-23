@@ -12,9 +12,18 @@ def candlestick_reversal_strategy(data):
         
     df.reset_index(drop=True, inplace=True)
     
+    # Calculate a 20-period moving average of volume for "larger than usual" check
+    if 'volume' in df.columns:
+        df['volume_sma'] = df['volume'].rolling(window=20).mean()
+    else:
+        df['volume_sma'] = 0
+        
     signals = [0] * len(df)
     
-    for i in range(1, len(df)):
+    for i in range(20, len(df)): # Start at 20 to allow SMA to compute
+        prev2_open = df.loc[i-2, 'open']
+        prev2_close = df.loc[i-2, 'close']
+        
         prev_open = df.loc[i-1, 'open']
         prev_close = df.loc[i-1, 'close']
         prev_high = df.loc[i-1, 'high']
@@ -25,16 +34,34 @@ def candlestick_reversal_strategy(data):
         curr_high = df.loc[i, 'high']
         curr_low = df.loc[i, 'low']
         
-        # Hammer pattern (bullish reversal)
-        body = abs(curr_close - curr_open)
-        lower_wick = min(curr_open, curr_close) - curr_low
-        upper_wick = curr_high - max(curr_open, curr_close)
+        prev_volume = df.loc[i-1, 'volume'] if 'volume' in df.columns else 0
+        prev_volume_sma = df.loc[i-1, 'volume_sma'] if 'volume_sma' in df.columns else 0
         
-        if lower_wick > 2 * body and upper_wick < body and prev_close < prev_open:
+        # Hammer pattern (bullish reversal) on the PREVIOUS candle
+        prev2_body = abs(prev2_close - prev2_open)
+        body = abs(prev_close - prev_open)
+        lower_wick = min(prev_open, prev_close) - prev_low
+        upper_wick = prev_high - max(prev_open, prev_close)
+        
+        is_hammer = (lower_wick > 2 * body and upper_wick < body and 
+                     prev2_close < prev2_open and body < prev2_body and 
+                     prev_open <= min(prev2_open, prev2_close) and
+                     prev_volume > prev_volume_sma)
+        
+        # Shooting star pattern (bearish reversal) on the PREVIOUS candle
+        is_shooting_star = (upper_wick > 2 * body and lower_wick < body and 
+                            prev2_close > prev2_open and body < prev2_body and
+                            prev_volume > prev_volume_sma)
+        
+        # Confirmation on the CURRENT candle
+        bullish_confirmation = curr_close > curr_open and curr_close > prev_close and curr_high <= prev2_open
+        bearish_confirmation = curr_close < curr_open and curr_close < prev_close and curr_high <= prev2_open
+        
+        if is_hammer and bullish_confirmation:
             signals[i] = 1  # Buy signal
         
-        # Shooting star pattern (bearish reversal) is enabled to act as an early EXIT for long positions
-        elif upper_wick > 2 * body and lower_wick < body and prev_close > prev_open:
+        # Shooting star pattern (bearish reversal) with confirmation
+        elif is_shooting_star and bearish_confirmation:
             signals[i] = -1  # Sell signal
     
     df['signal'] = signals
@@ -56,12 +83,18 @@ def calculate_trade_parameters(df, current_index, signal, entry_price, capital, 
     position_size = 0.0
     
     if signal == 1: # LONG
-        # SL at previous local support (minimum low of the last 5 finalized candles)
-        sl = df.loc[current_index-6:current_index-1, 'low'].min()
+        # SL at the midpoint between the bottom of the body and the low of the hammer (i-1)
+        prev_low = df.loc[current_index-1, 'low']
+        prev_open = df.loc[current_index-1, 'open']
+        prev_close = df.loc[current_index-1, 'close']
+        bottom_of_body = min(prev_open, prev_close)
+        
+        sl = prev_low + ((bottom_of_body - prev_low) * 0.1)
+        
         if entry_price > sl: # Valid risk distance
             price_delta_per_unit_in_rr = entry_price - sl
             
-            # Position Size in BTC such that if SL is hit, we lose exactly risk_amount
+            # Position Size in SOL such that if SL is hit, we lose exactly risk_amount
             # This ensures we are only *allocating* enough such that if the SL hits, 
             # we lose exactly our risk_amount.
             position_size = (risk_amount / price_delta_per_unit_in_rr)
@@ -73,8 +106,14 @@ def calculate_trade_parameters(df, current_index, signal, entry_price, capital, 
             tp = entry_price + (price_delta_per_unit_in_rr * rr_ratio)
             
     elif signal == -1: # SHORT
-        # SL at previous local resistance (maximum high of the last 5 finalized candles)
-        sl = df.loc[current_index-6:current_index-1, 'high'].max()
+        # SL at the midpoint between the top of the body and the high of the shooting star (i-1)
+        prev_high = df.loc[current_index-1, 'high']
+        prev_open = df.loc[current_index-1, 'open']
+        prev_close = df.loc[current_index-1, 'close']
+        top_of_body = max(prev_open, prev_close)
+        
+        sl = top_of_body + ((prev_high - top_of_body) / 2.0)
+        
         if sl > entry_price: # Valid risk distance
             price_delta_per_unit_in_rr = sl - entry_price
             
@@ -87,7 +126,8 @@ def calculate_trade_parameters(df, current_index, signal, entry_price, capital, 
                 position_size = max_size
                 
             tp = entry_price - (price_delta_per_unit_in_rr * rr_ratio)
-            
+    
+    print(f"Calculated trade parameters at index {current_index}: SL={sl:.2f}, TP={tp:.2f}, Position Size={position_size:.6f} SOL")
     return sl, tp, position_size
 
 # Example usage

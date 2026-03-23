@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 from strategy import calculate_trade_parameters
 
-def calculate_metrics(df):
+def calculate_metrics(df, trades=None):
     """
     Calculates strategy performance metrics.
     Assumes each row in df is a 5-minute interval.
@@ -69,6 +69,12 @@ def calculate_metrics(df):
     s_calmar = calmar if np.isfinite(calmar) else 0.0
     composite_score = (0.4 * s_sortino) + (0.3 * s_sharpe) + (0.3 * s_calmar)
     
+    # Win Rate calculation
+    win_rate = np.nan
+    if trades:
+        winning_trades = sum(1 for t in trades if t.get('pnl', 0) > 0)
+        win_rate = winning_trades / len(trades) if len(trades) > 0 else 0.0
+    
     return {
         'Sharpe Ratio': sharpe,
         'Sortino Ratio': sortino,
@@ -77,15 +83,17 @@ def calculate_metrics(df):
         'Beta': beta,
         'Alpha': alpha,
         'Annualized Return': annualized_return,
+        'Win Rate': win_rate,
         'Composite Score': composite_score
     }
 
-def backtest_strategy(df, initial_capital=1000000.0, risk_per_trade=0.02, rr_ratio=3.0):
+def backtest_strategy(df, initial_capital=1000000.0, risk_per_trade=0.02, rr_ratio=3.0, long_only=False):
     """
     Backtests the strategy using generated signals.
     - initial_capital: Starting capital (e.g., 1,000,000)
     - risk_per_trade: Amount of capital risked per trade (e.g., 0.02 for 2%)
     - rr_ratio: Risk-to-Reward ratio (e.g., 3.0 for 1:3 RR)
+    - long_only: If True, ignores short signals.
     SL is placed at the highest/lowest point of the last 5 periods (representing support/resistance).
     Returns the dataframe and a list of trade dictionaries.
     """
@@ -113,28 +121,36 @@ def backtest_strategy(df, initial_capital=1000000.0, risk_per_trade=0.02, rr_rat
                 # Conservative approach: Check if SL is hit.
                 if curr_row['low'] <= sl:
                     loss = (entry_price - sl) * position_size
-                    capital -= loss
-                    current_trade.update({'exit_i': i, 'exit_price': sl, 'pnl': -loss, 'reason': 'SL'})
+                    exit_commission = (sl * position_size) * 0.001  # Taker order for SL (0.1%)
+                    total_loss = loss + exit_commission + current_trade.get('entry_commission', 0)
+                    capital -= (loss + exit_commission)
+                    current_trade.update({'exit_i': i, 'exit_price': sl, 'pnl': -total_loss, 'reason': 'SL', 'exit_commission': exit_commission})
                     trades.append(current_trade)
                     in_position = False
                 elif curr_row['high'] >= tp:
                     profit = (tp - entry_price) * position_size
-                    capital += profit
-                    current_trade.update({'exit_i': i, 'exit_price': tp, 'pnl': profit, 'reason': 'TP'})
+                    exit_commission = (tp * position_size) * 0.0005  # Maker order for TP (0.05%)
+                    total_profit = profit - exit_commission - current_trade.get('entry_commission', 0)
+                    capital += (profit - exit_commission)
+                    current_trade.update({'exit_i': i, 'exit_price': tp, 'pnl': total_profit, 'reason': 'TP', 'exit_commission': exit_commission})
                     trades.append(current_trade)
                     in_position = False
                     
             elif position_type == 'SHORT':
                 if curr_row['high'] >= sl:
                     loss = (sl - entry_price) * position_size
-                    capital -= loss
-                    current_trade.update({'exit_i': i, 'exit_price': sl, 'pnl': -loss, 'reason': 'SL'})
+                    exit_commission = (sl * position_size) * 0.001  # Taker order for SL (0.1%)
+                    total_loss = loss + exit_commission + current_trade.get('entry_commission', 0)
+                    capital -= (loss + exit_commission)
+                    current_trade.update({'exit_i': i, 'exit_price': sl, 'pnl': -total_loss, 'reason': 'SL', 'exit_commission': exit_commission})
                     trades.append(current_trade)
                     in_position = False
                 elif curr_row['low'] <= tp:
                     profit = (entry_price - tp) * position_size
-                    capital += profit
-                    current_trade.update({'exit_i': i, 'exit_price': tp, 'pnl': profit, 'reason': 'TP'})
+                    exit_commission = (tp * position_size) * 0.0005  # Maker order for TP (0.05%)
+                    total_profit = profit - exit_commission - current_trade.get('entry_commission', 0)
+                    capital += (profit - exit_commission)
+                    current_trade.update({'exit_i': i, 'exit_price': tp, 'pnl': total_profit, 'reason': 'TP', 'exit_commission': exit_commission})
                     trades.append(current_trade)
                     in_position = False
         
@@ -143,10 +159,10 @@ def backtest_strategy(df, initial_capital=1000000.0, risk_per_trade=0.02, rr_rat
         if not in_position and i > 5:
             prev_signal = df.loc[i-1, 'signal']
             
-            if prev_signal == 1 or prev_signal == -1:
+            if prev_signal == 1 or (not long_only and prev_signal == -1):
                 entry_price = curr_row['open']
                 calc_sl, calc_tp, calc_pos_size = calculate_trade_parameters(
-                    df, i, prev_signal, entry_price, capital, risk_per_trade, rr_ratio
+                    df, i-1, prev_signal, entry_price, capital, available_cash=None, risk_per_trade=risk_per_trade, rr_ratio=rr_ratio
                 )
                 
                 # If calculated position size is greater than 0, properties are valid
@@ -155,8 +171,12 @@ def backtest_strategy(df, initial_capital=1000000.0, risk_per_trade=0.02, rr_rat
                     sl = calc_sl
                     tp = calc_tp
                     position_size = calc_pos_size
+                    
+                    entry_commission = (entry_price * position_size) * 0.001  # Market order for Entry (Taker, 0.1%)
+                    capital -= entry_commission
+                    
                     in_position = True
-                    current_trade = {'type': position_type, 'entry_i': i, 'entry_price': entry_price, 'size': position_size}
+                    current_trade = {'type': position_type, 'entry_i': i, 'entry_price': entry_price, 'size': position_size, 'entry_commission': entry_commission}
 
     df['capital'] = capital_history
     return df, trades
@@ -212,17 +232,17 @@ def plot_interactive_trades(df, trades, initial_capital=1000000.0, risk_per_trad
                              name='Stop Loss Hit'))
                              
     # Calculate operational metrics
-    metrics = calculate_metrics(df)
+    metrics = calculate_metrics(df, trades)
 
     # Prepare ratios table (separate view for ratios/metrics)
     ratios_keys = [
-        'Annualized Return', 'Sharpe Ratio', 'Sortino Ratio', 'Calmar Ratio',
+        'Annualized Return', 'Win Rate', 'Sharpe Ratio', 'Sortino Ratio', 'Calmar Ratio',
         'Max Drawdown', 'Beta', 'Alpha', 'Composite Score'
     ]
     ratios_values = []
     for k in ratios_keys:
         v = metrics.get(k)
-        if k == 'Annualized Return' and np.isfinite(v):
+        if k in ['Annualized Return', 'Win Rate'] and np.isfinite(v):
             ratios_values.append(f"{v*100:.2f}%")
         elif k == 'Max Drawdown' and np.isfinite(v):
             ratios_values.append(f"-{v*100:.2f}%")
@@ -283,10 +303,10 @@ def plot_interactive_trades(df, trades, initial_capital=1000000.0, risk_per_trad
     fig.write_html(save_path, include_plotlyjs='cdn')
     print(f"Interactive trades chart saved to '{save_path}'")
 
-def analyze_and_plot(result_df, initial_capital=1000000.0, risk_per_trade=0.02, rr_ratio=3.0, save_path='data/performance_chart.png', csv_path='data/strategy_output.csv'):
+def analyze_and_plot(result_df, initial_capital=1000000.0, risk_per_trade=0.02, rr_ratio=3.0, save_path='data/performance_chart.png', csv_path='data/strategy_output.csv', long_only=False):
     # Run the backtest 
     print(f"Running backtest with initial capital ${initial_capital:,.2f}...")
-    backtested_df, trades = backtest_strategy(result_df, initial_capital=initial_capital, risk_per_trade=risk_per_trade, rr_ratio=rr_ratio)
+    backtested_df, trades = backtest_strategy(result_df, initial_capital=initial_capital, risk_per_trade=risk_per_trade, rr_ratio=rr_ratio, long_only=long_only)
     
     final_capital = backtested_df['capital'].iloc[-1]
     print(f"\nFinal Capital: ${final_capital:,.2f}")

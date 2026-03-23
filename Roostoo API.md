@@ -28,6 +28,7 @@
 
 # Document
 
+Each executed order takes 0.1% commission fee for taker order (market order) and 0.05% for maker order (limit order). 
 
 ## Public API_KEY & SECRET_KEY 
 

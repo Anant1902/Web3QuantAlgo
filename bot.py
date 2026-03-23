@@ -139,8 +139,8 @@ async def check_strategy():
     """Run strategy on stored klines."""
     global klines_df
     
-    if len(klines_df) < 2:
-        return # Need at least 2 complete candles for the strategy
+    if len(klines_df) < 25:
+        return # Need at least 25 complete candles (20 for SMA + lookbacks)
         
     df = klines_df.copy()
     
@@ -236,7 +236,7 @@ async def check_strategy():
             print(f"Error fetching balance from Roostoo: {e}, using default Capital ${capital}.")
 
         sl, tp, position_size = calculate_trade_parameters(
-            df_with_signals, latest_index, latest_signal, latest_open, capital, available_cash=cash
+            df_with_signals, latest_index, latest_signal, latest_close, capital, available_cash=cash, risk_per_trade=0.02, rr_ratio=3.0
         )
         
         print(f"Signal Detected: {signal_type} at {latest_close}")
